@@ -1,6 +1,7 @@
 {
   "env": {
-    "browser": true
+    "browser": true,
+    "es6": true
   },
   "globals": {
     "ActiveXObject": true,
@@ -141,7 +142,7 @@
       }
     ],
     "max-len": [
-      2,
+      0,
       120,
       {
         "ignoreComments": true

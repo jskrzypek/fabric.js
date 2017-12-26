@@ -1,5 +1,8 @@
-var fs = require('fs'),
-    exec = require('child_process').exec;
+'use strict';
+/* eslint-env node */
+var fs = require('fs-extra'),
+    exec = require('execa').shell,
+    UglifyJS = require('uglify-js');
 
 var buildArgs = process.argv.slice(2),
     buildArgsAsObject = { },
@@ -16,7 +19,8 @@ var modulesToInclude = buildArgsAsObject.modules ? buildArgsAsObject.modules.spl
 var modulesToExclude = buildArgsAsObject.exclude ? buildArgsAsObject.exclude.split(',') : [];
 
 var distributionPath = buildArgsAsObject.dest || 'dist/';
-var minifier = buildArgsAsObject.minifier || 'uglifyjs';
+// var minifier = buildArgsAsObject.minifier || 'uglifyjs';
+var minifier = 'uglifyjs';
 var mininfierCmd;
 
 var noStrict = 'no-strict' in buildArgsAsObject;
@@ -32,18 +36,18 @@ var amdUglifyFlags = '';
 if (amdLib === 'requirejs' && minifier !== 'uglifyjs') {
   console.log('[notice]: require.js support requires uglifyjs as minifier; changed minifier to uglifyjs.');
   minifier = 'uglifyjs';
-  amdUglifyFlags = " -r 'require,exports,window,fabric' -e window:window,undefined ";
+  amdUglifyFlags = ' -r \'require,exports,window,fabric\' -e \'window:window,undefined\' ';
 }
 
 // if we want sourceMap support, uglify or google closure compiler are supported
 var sourceMapFlags = '';
-if (sourceMap) {
-  if (minifier !== 'uglifyjs' && minifier !== 'closure') {
-    console.log('[notice]: sourceMap support requires uglifyjs or google closure compiler as minifier; changed minifier to uglifyjs.');
-    minifier = 'uglifyjs';
-  }
-  sourceMapFlags = minifier === 'uglifyjs' ? ' --source-map fabric.min.js.map' : ' --create_source_map fabric.min.js.map --source_map_format=V3';
-}
+// if (sourceMap) {
+//   if (minifier !== 'uglifyjs' && minifier !== 'closure') {
+//     console.log('[notice]: sourceMap support requires uglifyjs or google closure compiler as minifier; changed minifier to uglifyjs.');
+//     minifier = 'uglifyjs';
+//   }
+//   sourceMapFlags = minifier === 'uglifyjs' ? ' --source-map fabric.min.js.map' : ' --create_source_map fabric.min.js.map --source_map_format=V3';
+// }
 
 if (minifier === 'yui') {
   mininfierCmd = 'java -jar ' + rootPath + '/lib/yuicompressor-2.4.6.jar fabric.js -o fabric.min.js';
@@ -52,7 +56,19 @@ else if (minifier === 'closure') {
   mininfierCmd = 'java -jar ' + rootPath + '/lib/google_closure_compiler.jar --js fabric.js --js_output_file fabric.min.js' + sourceMapFlags;
 }
 else if (minifier === 'uglifyjs') {
-  mininfierCmd = 'uglifyjs ' + amdUglifyFlags + ' --compress --mangle --output fabric.min.js fabric.js' + sourceMapFlags;
+  // mininfierCmd = 'uglifyjs ' + amdUglifyFlags + ' --compress --mangle --output fabric.min.js fabric.js' + sourceMapFlags;
+  mininfierCmd = () => fs.readFile('fabric.js', 'utf-8')
+    .then((code) => {
+      let result = UglifyJS.minify(code, {
+        compress: true,
+        mangle: true,
+        sourceMap: {
+          filename: 'fabric.min.js',
+          url: 'fabric.min.js.map'
+        }
+      });
+      return Promise.all([fs.writeFile('fabric.min.js', result.code, 'utf-8'), fs.writeFile('fabric.min.js.map', result.map, 'utf-8')]);
+    });
 }
 
 var buildMinified = 'build-minified' in buildArgsAsObject;
@@ -72,37 +88,40 @@ var distFileContents =
     ' minifier=' + minifier +
   '` */';
 
-function appendFileContents(fileNames, callback) {
+function appendFileContents(fileNames) {
 
-  (function readNextFile() {
+  return (function readNextFile(contents) {
 
     if (fileNames.length <= 0) {
-      return callback();
+      return Promise.resolve(contents);
     }
 
     var fileName = fileNames.shift();
 
     if (!fileName) {
-      return readNextFile();
+      return readNextFile(contents);
     }
 
-    fs.readFile(__dirname + '/' + fileName, function (err, data) {
-      if (err) throw err;
-      var strData = String(data);
-      if (noStrict) {
-        strData = strData.replace(/"use strict";?\n?/, '');
-      }
-      if (noSVGExport) {
-        strData = strData.replace(/\/\* _TO_SVG_START_ \*\/[\s\S]*?\/\* _TO_SVG_END_ \*\//g, '');
-      }
-      if (noSVGImport) {
-        strData = strData.replace(/\/\* _FROM_SVG_START_ \*\/[\s\S]*?\/\* _FROM_SVG_END_ \*\//g, '');
-      }
-      distFileContents += ('\n' + strData + '\n');
-      readNextFile();
-    });
-
-  })();
+    return fs.readFile(__dirname + '/' + fileName)
+      .then(function (data) {
+        // if (err) {
+        //   err.stack = err.stack || Error.captureStackTrace(err);
+        //   throw err;
+        // };
+        var strData = String(data);
+        if (noStrict) {
+          strData = strData.replace(/"use strict";?\n?/, '');
+        }
+        if (noSVGExport) {
+          strData = strData.replace(/\/\* _TO_SVG_START_ \*\/[\s\S]*?\/\* _TO_SVG_END_ \*\//g, '');
+        }
+        if (noSVGImport) {
+          strData = strData.replace(/\/\* _FROM_SVG_START_ \*\/[\s\S]*?\/\* _FROM_SVG_END_ \*\//g, '');
+        }
+        contents += ('\n' + strData + '\n');
+        return readNextFile(contents);
+      });
+  })(distFileContents);
 }
 
 function ifSpecifiedInclude(moduleName, fileName) {
@@ -240,7 +259,7 @@ var filesToInclude = [
 
 if (buildMinified) {
   for (var i = 0; i < filesToInclude.length; i++) {
-    if (!filesToInclude[i]) continue;
+    if (!filesToInclude[i]) {continue;}
     var fileNameWithoutSlashes = filesToInclude[i].replace(/\//g, '^');
     exec('uglifyjs -nc ' + amdUglifyFlags + filesToInclude[i] + ' > tmp/' + fileNameWithoutSlashes);
   }
@@ -249,59 +268,67 @@ else {
   // change the current working directory
   process.chdir(distributionPath);
 
-  appendFileContents(filesToInclude, function() {
-    fs.writeFile('fabric.js', distFileContents, function (err) {
-      if (err) {
-        console.log(err);
-        throw err;
+  appendFileContents(filesToInclude.slice())
+    .then(function(code) {
+      return fs.writeFile('fabric.js', code);
+    })
+    .then(function () {
+      // if (err) {
+      //   console.log(err);
+      //   throw err;
+      // }
+
+      // // add js wrapping in AMD closure for requirejs if necessary
+      // if (amdLib !== false) {
+      //   exec('uglifyjs fabric.js ' + amdUglifyFlags + ' -b --output fabric_ugly.js');
+      // }
+
+      // if (amdLib !== false) {
+      //   console.log('Built distribution to ' + distributionPath + 'fabric.js (' + amdLib + '-compatible)');
+      // } else {
+      //   console.log('Built distribution to ' + distributionPath + 'fabric.js');
+      // }
+
+      return mininfierCmd();
+    })
+    .then(function () {
+      // if (error) {
+      //   console.error('Minification failed using', minifier, 'with', mininfierCmd);
+      //   console.error('Minifier error output:\n' + error);
+      //   console.error('Minifier error output:\n' + output);
+      //   error.stack = error.stack || Error.captureStackTrace(error);
+      //   throw error;
+      // // process.exit(1);
+      // }
+      console.log('Minified using', minifier, 'to ' + distributionPath + 'fabric.min.js');
+
+      if (sourceMapFlags) {
+        console.log('Built sourceMap to ' + distributionPath + 'fabric.min.js.map');
       }
 
-      // add js wrapping in AMD closure for requirejs if necessary
-      if (amdLib !== false) {
-        exec('uglifyjs fabric.js ' + amdUglifyFlags + ' -b --output fabric.js');
-      }
+      return exec('gzip -c fabric.min.js > fabric.min.js.gz');
+    })
+    .then(() => {
 
-      if (amdLib !== false) {
-        console.log('Built distribution to ' + distributionPath + 'fabric.js (' + amdLib + '-compatible)');
-      } else {
-        console.log('Built distribution to ' + distributionPath + 'fabric.js');
-      }
-
-      exec(mininfierCmd, function (error, output) {
-        if (error) {
-          console.error('Minification failed using', minifier, 'with', mininfierCmd);
-          console.error('Minifier error output:\n' + error);
-          process.exit(1);
-        }
-        console.log('Minified using', minifier, 'to ' + distributionPath + 'fabric.min.js');
-
-        if (sourceMapFlags) {
-          console.log('Built sourceMap to ' + distributionPath + 'fabric.min.js.map');
-        }
-
-        exec('gzip -c fabric.min.js > fabric.min.js.gz', function (error, output) {
-          console.log('Gzipped to ' + distributionPath + 'fabric.min.js.gz');
-        });
-      });
 
       // Always build requirejs AMD module in fabric.require.js
       // add necessary requirejs footer code to filesToInclude if we haven't before
       if (amdLib === false) {
-        amdLib = "requirejs";
+        amdLib = 'requirejs';
         filesToInclude[filesToInclude.length] = ifSpecifiedAMDInclude(amdLib);
       }
 
-      appendFileContents(filesToInclude, function() {
-        fs.writeFile('fabric.require.js', distFileContents, function (err) {
-          if (err) {
-            console.log(err);
-            throw err;
-          }
-          exec('uglifyjs fabric.require.js ' + amdUglifyFlags + ' -b --output fabric.require.js');
-          console.log('Built distribution to ' + distributionPath + 'fabric.require.js (requirejs-compatible)');
-        });
-      });
-
+      return appendFileContents(filesToInclude.slice());
+    })
+    .then(() => fs.writeFile('fabric.require.js', distFileContents))
+    .then(function () {
+      // if (err) {
+      //   console.log(err);
+      //   throw err;
+      // }
+      return exec('uglifyjs fabric.require.js ' + amdUglifyFlags + ' -b --output fabric.require.js');
+    })
+    .then(()=>{
+      console.log('Built distribution to ' + distributionPath + 'fabric.require.js (requirejs-compatible)');
     });
-  });
 }
